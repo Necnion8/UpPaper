@@ -1,11 +1,11 @@
-from dncore.abc.serializables import ChannelId
+from dncore.abc.serializables import MessageId
 from dncore.configuration import ConfigValues
 from dncore.configuration.files import FileConfigValues
 
 
 class GuildSetting(ConfigValues):
-    enable = True
-    channels: dict[str, ChannelId]  # project: channel_id
+    enable = False
+    messages: dict[str, MessageId]  # project: message_id
 
 
 class Config(FileConfigValues):

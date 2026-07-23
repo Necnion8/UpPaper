@@ -6,9 +6,9 @@ import discord
 from dncore.abc.serializables import Embed
 from dncore.command import oncommand, CommandContext
 from dncore.plugin import Plugin
-from settingcommand import SettingCommandHandler
 from .config import Config
 from .model import *
+from .settingcommand import SettingCommandHandler
 from .uppaper import UpPaper, GIT_URL
 
 log = getLogger(__name__)
@@ -42,7 +42,7 @@ class UpPaperPlugin(Plugin):
     def __init__(self):
         self.up = UpPaper(user_agent=f"UpPaper v{self.info.version}, {GIT_URL}")
         self.config = Config(self.data_dir / "config.yml")
-        self.setting_commands = SettingCommandHandler(self, self.up)
+        self.setting_commands = SettingCommandHandler(self, self.up, self.config)
 
     async def on_enable(self):
         self.setting_commands.register()
