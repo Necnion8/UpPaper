@@ -7,7 +7,7 @@ from .model import *
 from .util import *
 
 USER_AGENT = f"UpPaper v1, {GIT_URL}"
-API_URL = "https://fill.papermc.io/v3/"
+API_URL = "https://fill.papermc.io/"
 log = getLogger(__name__)
 
 
@@ -51,13 +51,13 @@ class UpPaper(object):
     # api
 
     async def project(self, project: str) -> Project:
-        url = f"projects/{project}"
+        url = f"/v3/projects/{project}"
         return from_dict(Project, await self._fetch(url))
 
     async def version(self, project: str, version: str) -> Version:
-        url = f"projects/{project}/versions/{version}"
+        url = f"/v3/projects/{project}/versions/{version}"
         return from_dict(Version, await self._fetch(url))
 
     async def builds(self, project: str, version: str) -> list[Build]:
-        url = f"projects/{project}/versions/{version}/builds"
+        url = f"/v3/projects/{project}/versions/{version}/builds"
         return [from_dict(Build, j) for j in await self._fetch(url)]
