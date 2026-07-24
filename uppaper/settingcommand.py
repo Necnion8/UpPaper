@@ -5,12 +5,12 @@ from typing import TYPE_CHECKING
 import discord
 
 from dncore import DNCoreAPI
-from dncore.abc.serializables import MessageId, Embed, ChannelId
+from dncore.abc.serializables import MessageId, Embed
 from dncore.command import CommandContext
 from dncore.discord.events import SettingInfoCommandPreExecuteEvent
 from dncore.event import EventListener, onevent
 from .config import GuildSetting
-from .util import StreamView
+from .ui import StreamView, Select, ChannelSelect
 
 if TYPE_CHECKING:
     from .config import Config
@@ -18,6 +18,16 @@ if TYPE_CHECKING:
     from .uppaper import UpPaper
 
 log = getLogger(__name__)
+SERVER_TYPES = (
+    "paper", "folia", "velocity",
+    "waterfall", "travertine",
+)
+
+
+def get_channel_id(setting: GuildSetting | None, server_type: str):
+    if m_id := (setting and setting.messages.get(server_type)):
+        return m_id.channel_id
+    return None
 
 
 class SettingCommandHandler(EventListener):
@@ -30,10 +40,8 @@ class SettingCommandHandler(EventListener):
         owner = self.plugin
         DNCoreAPI.commands().register_class(owner, self)
         DNCoreAPI.events().register_listener(owner, self)
-        grp = DNCoreAPI.default_commands().add_setting("UpPaper 自動通知設定")
-        grp.add(owner, "enable", "<on/off>", self._cmd_enable)
-        grp.add(owner, "channel", "(ｻｰﾊﾞｰﾀｲﾌﾟ) (ﾁｬﾝﾈﾙID)", self._cmd_channel)  # TODO: unsetがない
-        grp.add(owner, "send", "(ｻｰﾊﾞｰﾀｲﾌﾟ)", self._cmd_send)
+        grp = DNCoreAPI.default_commands().add_setting("UpPaper 通知チャンネル設定")
+        grp.add(owner, "uppaper", "", self._cmd_setting)
 
     def unregister(self):
         owner = self.plugin
@@ -60,179 +68,190 @@ class SettingCommandHandler(EventListener):
         icon = SettingInfoCommandPreExecuteEvent.LINE_ICON
 
         settings = self.get_guild(event.context.guild.id)
-        state = ["OFF", "ON"][bool(settings and settings.enable)]
+        state_label = ["OFF", "ON"][bool(settings and settings.enable)]
 
-        event.add_line(owner, f"\n**{icon_title} UpPaper 自動通知設定**")
-        event.add_line(owner, f"{icon} 通知: **{state}**")
+        event.add_line(owner, f"\n**{icon_title} UpPaper 通知チャンネル設定**")
+        event.add_line(owner, f"{icon} 通知: **{state_label}**")
         if settings:
             if settings.messages:
                 for server_type, m_id in settings.messages.items():
-                    event.add_line(owner, f"{icon} ﾁｬﾝﾈﾙ: <#{m_id.channel_id}> -> **`{server_type}`**")
-            elif state:
-                event.add_line(owner, f"{icon} ﾁｬﾝﾈﾙ: 未設定")
+                    event.add_line(owner, f"{icon} <#{m_id.channel_id}> (**{server_type}**)")
+            elif settings and settings.enable:
+                event.add_line(owner, f"{icon} チャンネル: 未設定")
 
-    async def _cmd_enable(self, ctx: CommandContext):
-        settings = self.get_guild(ctx.guild.id)
-        channels = settings and len(set(settings.channels.values())) or 0
-        state = ctx.args.is_true(default=None)
-        if state is None:
-            if not settings or not settings.enable:
-                await ctx.send_info(":grey_exclamation: 自動通知は **OFF** です")
-            elif not channels:
-                await ctx.send_info(":grey_exclamation: 自動通知は **ON** です (チャンネル未設定)")
-            else:
-                await ctx.send_info(
-                    ":grey_exclamation: 自動通知は **ON** です (チャンネル: {channel_count})",
-                    args=dict(channel_count=channels),
+    async def _cmd_setting(self, ctx: CommandContext):
+        view = StreamView(timeout=30)
+        setting = self.get_guild(ctx.guild.id)
+
+        channels = {
+            _type: discord.Object(id=ch_id) if (ch_id := get_channel_id(setting, _type)) else None
+            for _type in SERVER_TYPES
+        }
+        _default = next(((k, v) for k, v in channels.items() if v), tuple(channels.items())[0])
+
+        type_select = view.add_item(Select(
+            options=[discord.SelectOption(label=f"{n[0].upper()}{n[1:]} サーバー", value=n, default=n == _default[0])
+                     for i, n in enumerate(channels.keys())],
+            required=True,
+        ))
+        _type = values[0] if (values := type_select.get_current_values()) else None
+        channel_select = view.add_item(ChannelSelect(
+            channel_types=[discord.ChannelType.text, ],
+            min_values=0,
+            max_values=1,
+            default_values=[c for c in channels.values() if c and c == _default[1]],
+            placeholder="通知を送るチャンネルを選択",
+        ))
+        _channel = ctx.guild.get_channel(values[0]) if (values := channel_select.get_current_values()) else None
+
+        state_btn = view.add_button()  # set by update_items
+        send_btn = view.add_button(style=discord.ButtonStyle.primary, label="送信")
+        exit_btn = view.add_button(style=discord.ButtonStyle.gray, label="終了")
+
+        def update_messages(edit_mode=True):
+            channel_select.default_values = _channel and [_channel, ] or []
+            for opt in type_select.options:
+                opt.default = opt.value == _type
+            send_btn.disabled = not _type or not _channel
+
+            state_btn.style, state_btn.label, state_label = (
+                (discord.ButtonStyle.primary, "有効にする", "\\💤 **無効**"),
+                (discord.ButtonStyle.gray, "無効にする", "\\✅ **有効**"),
+            )[bool(setting and setting.enable)]
+
+            lines = [f"- 通知設定: {state_label}"]
+            if any(channels.values()):
+                lines.append("- チャンネル:")
+                lines.extend(
+                    f"  - <#{_ch.id}> -> **`{_typ}`**"
+                    for _typ, _ch in channels.items() if _ch
                 )
-            return
+            else:
+                lines.append("- チャンネル: 未設定")
 
-        settings = self.get_guild(ctx.guild.id, create=True)
-        state_txt = "ON" if state else "OFF"
-        msg = "すでに自動通知は **{}** になっています" if state == settings.enable else "自動通知を **{}** にしました"
-        extra = "" if not state or channels else " (チャンネルが未設定です)"
-        settings.enable = bool(state)
-        self.save_settings()
+            if edit_mode:
+                lines.append("")
+                lines.append(":point_down: サーバータイプを選んでからチャンネルを変更してください")
 
-        await ctx.send_info(":grey_exclamation: " + msg.format(state_txt) + extra)
-
-    async def _cmd_channel(self, ctx: CommandContext):
-        settings = self.get_guild(ctx.guild.id)
-        try:
-            server_type = ctx.args.get(0)
-            channel_id = ctx.args.get_channel(1)
-        except IndexError:
-            await ctx.send_warn(":grey_exclamation: 引数が足りません。サーバータイプとチャンネルIDを指定してください。")
-            return
-        except ValueError:
-            await ctx.send_warn(":grey_exclamation: チャンネルIDが無効です。ID数値を指定してください。")
-            return
-
-        if server_type not in ("paper", "folia", "velocity", "waterfall", "travertine", ):
-            await ctx.send_warn(
-                ":grey_exclamation: サーバータイプが無効です。\n"
-                "-# 指定できる値: paper, folia, velocity, waterfall, travertine",
-            )
-            return
-
-        try:
-            channel = await ctx.client.fetch_channel(channel_id)
-        except discord.HTTPException as e:
-            await ctx.send_warn(
-                ":exclamation: 指定されたチャンネルが見つかりません\n"
-                f"-# エラー: {e.text}",
-            )
-            return
-
-        if ctx.guild != channel.guild or not channel.permissions_for(ctx.guild.me).send_messages:
-            await ctx.send_warn(
-                ":exclamation: チャンネルが存在しない、または発言する権限がありません。\n"
-                f"-# 指定されたチャンネル: {channel.mention}",
-            )
-            return
-
-        if settings and (m_id := settings.messages.get(server_type)) and m_id.channel_id == channel.id:
-            await ctx.send_warn(
-                ":ok_hand: すでに通知 `{type}` -> {channel.mention} で設定されています",
-                args=dict(type=server_type, channel=channel),
-            )
-            return
-
-        settings = self.get_guild(ctx.guild.id, create=True)
-        settings.messages[server_type] = MessageId(channel_id=channel.id)
-        self.save_settings()
-        await ctx.send_info(
-            ":ok_hand: `{type}` サーバーの通知を {channel.mention} に設定しました",
-            args=dict(type=server_type, channel=channel),
-        )
-
-    async def _cmd_send(self, ctx: CommandContext):
-        settings = self.get_guild(ctx.guild.id)
-        try:
-            server_type = ctx.args.get(0)
-        except IndexError:
-            await ctx.send_warn(":grey_exclamation: 引数が足りません。サーバータイプを指定してください。")
-            return
-
-        m_id = settings and settings.messages.get(server_type)
-        if m_id is None or m_id.channel_id is None:
-            await ctx.send_warn(
-                ":exclamation: `{type}` サーバーの通知チャンネルが未設定です",
-                args=dict(type=server_type),
-            )
-            return
-
-        if (channel := await ChannelId(m_id.channel_id).get()) is None:
-            await ctx.send_warn(":exclamation: チャンネルが見つかりません")
-            return
+            return Embed.info("\n".join(lines), "UpPaper 通知チャンネル設定")
 
         ctx.clean_message = False
-        ask_view = StreamView(timeout=30)
-        send_button = ask_view.add_button(style=discord.ButtonStyle.primary, label="送信")
-        cancel_button = ask_view.add_button(style=discord.ButtonStyle.danger, label="中止")
+        ctx.interactive = True
+        await ctx.send_info(update_messages(), kw=dict(view=view))
 
+        async for inter, item in view:
+            r = inter.response  # type: discord.InteractionResponse
+
+            if exit_btn is item:
+                await r.edit_message(embed=update_messages(False), view=None)
+                break
+
+            if send_btn is item and (m_id := setting.messages.get(_type)):
+                asyncio.create_task(self._reply_ask_send(inter, _type, m_id))
+                continue
+
+            if state_btn is item:
+                new_state = state_btn.style == discord.ButtonStyle.primary
+                if new_state or setting:
+                    setting = setting or self.get_guild(ctx.guild.id, create=True)
+                    setting.enable = new_state
+                    self.save_settings()
+
+            else:
+                # store value
+                _type = values[0] if (values := type_select.get_current_values()) else None
+                if type_select is item:
+                    _channel = channels[_type]
+
+                elif channel_select is item:
+                    setting = setting or self.get_guild(ctx.guild.id, create=True)
+                    if values := channel_select.get_current_values():
+                        channels[_type] = _channel = ctx.guild.get_channel(values[0])
+                        if m_id := setting.messages.get(_type):
+                            m_id.channel_id = _channel.id
+                        else:
+                            setting.messages[_type] = MessageId(channel_id=_channel.id)
+                    else:
+                        channels[_type] = _channel = None
+                        setting.messages.pop(_type, None)
+                    self.save_settings()
+
+            await r.edit_message(embed=update_messages(), view=view)
+
+        else:
+            await ctx.send_info(update_messages(False), kw=dict(view=None))
+            ctx.clean_message = True
+            ctx.clean_auto()
+
+    async def _reply_ask_send(self, inter: discord.Interaction, server_type: str, m_id: MessageId):
+        view = StreamView(timeout=10)
+        send_button = view.add_button(style=discord.ButtonStyle.primary, label="送信")
+        view.add_button(style=discord.ButtonStyle.danger, label="中止")
+
+        inter_r = inter.response  # type: discord.InteractionResponse
         try:
             m = await m_id.fetch()
         except (ValueError, discord.HTTPException):  # Forbidden やその他エラーを許容する
             m = None
-            await ctx.send_info(
-                ":warning: 通知を送信します。続行しますか？\n"
-                "-# チャンネル: <#{channel_id}>",
-                args=dict(channel_id=m_id.channel_id),
-                kw=dict(view=ask_view),
+            await inter_r.send_message(
+                embed=Embed.info(
+                    ":warning: 通知を送信します。続行しますか？\n"
+                    f"-# チャンネル: <#{m_id.channel_id}> (**{server_type}**)",
+                ),
+                ephemeral=True,
+                view=view,
             )
         else:
-            await ctx.send_info(
-                ":warning: 通知を更新します。続行しますか？\n"
-                "-# チャンネル: {channel.mention}\n"
-                "-# 編集先: {message.jump_url}",
-                args=dict(channel=m.channel, message=m),
-                kw=dict(view=ask_view),
+            await inter_r.send_message(
+                embed=Embed.info(
+                    ":warning: 通知を更新します。続行しますか？\n"
+                    f"-# 編集先: {m.jump_url}",
+                ),
+                ephemeral=True,
+                view=view,
             )
 
-        async for inter, item in ask_view:
+        async for inter, item in view:
             r = inter.response  # type: discord.InteractionResponse
 
-            if inter.user != ctx.author:
-                await r.send_message(
-                    embed=Embed.warn(":warning: コマンド実行者ではないため、操作できません。"),
-                    ephemeral=True,
+            if send_button is not item:
+                await r.edit_message(
+                    embed=Embed.warn(":ok_hand: 中止しました"),
+                    view=None,
+                    delete_after=2,
                 )
-                continue
-
-            if send_button is item:
-                asyncio.create_task(r.defer())
                 break
 
-            elif cancel_button is item:
-                await r.edit_message(embed=Embed.info(":ok_hand: 中止しました"), view=None, )
-                return
+            try:
+                # TODO:
+                if m:
+                    await m.edit(content="Hi")
+                else:
+                    ch = await inter.guild.fetch_channel(m_id.channel_id)
+                    m = await ch.send("Hello")
 
-        else:
-            await ctx.send_info(":ok_hand: 中止しました", kw=dict(view=None), )
-            return
+            except discord.HTTPException as e:
+                await r.edit_message(
+                    embed=Embed.warn(
+                        ":exclamation: 通知の送信に失敗しました\n"
+                        f"-# エラー: {e.text}",
+                    ),
+                    view=None,
+                    delete_after=5,
+                )
 
-        try:
-            if m:
-                await m.edit(content="Hello edited")
             else:
-                m = await channel.send("Hello")
-
-        except discord.HTTPException as e:
-            ctx.clean_auto(error=True)
-            await ctx.send_warn(
-                ":exclamation: 通知の送信に失敗しました\n"
-                f"-# エラー: {e.text}",
-                kw=dict(view=None),
-            )
+                await r.edit_message(
+                    embed=Embed.info(
+                        f":+1: 正常に完了しました: {m.jump_url}",
+                    ),
+                    view=None,
+                    delete_after=5,
+                )
+                setting = self.get_guild(m.guild.id, create=True)
+                setting.messages[server_type] = MessageId(m.id, m.channel.id)
+                self.save_settings()
+            break
 
         else:
-            ctx.clean_auto()
-            await ctx.send_info(
-                ":+1: 正常に完了しました: {m.jump_url}",
-                args=dict(m=m),
-                kw=dict(view=None),
-            )
-
-            settings.messages[server_type] = MessageId(m.id, m.channel.id)
-            self.save_settings()
+            await inter.delete_original_response()

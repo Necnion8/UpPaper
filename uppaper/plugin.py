@@ -58,6 +58,7 @@ class UpPaperPlugin(Plugin):
         {command} [type] [version]
         PaperMC によって提供されるサーバー情報を表示します
 
+
         - 引数1 `type`: サーバーの種類指定
           -# 例: paper, folia, velocity
         - 引数2 `version`: サーバーのバージョン指定

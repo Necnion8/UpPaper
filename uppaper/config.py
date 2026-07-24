@@ -9,6 +9,7 @@ class GuildSetting(ConfigValues):
 
 
 class Config(FileConfigValues):
-    # 更新をチェックする時刻
-    check_hours = 10
+    # バージョン通知を更新する時刻
+    update_check_hour = 10
+    # 各ルームの設定
     guilds_setting: dict[str, GuildSetting]
