@@ -1,41 +1,23 @@
-import datetime
+import asyncio
 from logging import getLogger
+from typing import TYPE_CHECKING
 
 import discord
 
-from dncore.abc.serializables import Embed
+from dncore import DNCoreAPI
 from dncore.command import oncommand, CommandContext
+from dncore.event import onevent, Priority
 from dncore.plugin import Plugin
-from .config import Config
-from .model import *
+from .config import Config, UpdateChannel
+from .event import UpPaperVersionNotifyEvent
 from .settingcommand import SettingCommandHandler
 from .uppaper import UpPaper, GIT_URL
+from .util import *
+
+if TYPE_CHECKING:
+    from .timerlib import UpPaperTimer
 
 log = getLogger(__name__)
-
-
-def create_message(project: Project, version: str, build: Build, *, fetch_time: datetime.datetime = None):
-    dt = "{0.year}/{0.month}/{0.day}".format(build.time.astimezone())
-    family = next(f for f, vers in project.versions.items() if version in vers)
-    family_url = f"https://fill-ui.papermc.io/projects/{project.project.id}/family/{family}"
-    build_url = f"https://fill-ui.papermc.io/projects/{project.project.id}/version/{version}?build={build.id}"
-    download_file = build.downloads.get("server:default")
-
-    lines = [
-        f"- Build **#{build.id}** ({build.channel}, {dt})",
-        f"- [ファミリー情報]({family_url}) | [バージョン情報]({build_url})",
-    ]
-
-    if download_file:
-        lines.append(f"- [{download_file.name}]({download_file.url}) ({round(download_file.size/1024/1024, 1)} MB)")
-
-    em = Embed.info("\n".join(lines), f"# {project.project.name} {version}")
-
-    if fetch_time is not None:
-        dt = "{0.month}/{0.day}, {0.hour}:{0.minute:02d}".format(fetch_time)
-        em.set_footer(text=f"({dt} 時点)")
-
-    return em
 
 
 class UpPaperPlugin(Plugin):
@@ -43,14 +25,41 @@ class UpPaperPlugin(Plugin):
         self.up = UpPaper(user_agent=f"UpPaper v{self.info.version}, {GIT_URL}")
         self.config = Config(self.data_dir / "config.yml")
         self.setting_commands = SettingCommandHandler(self, self.up, self.config)
+        self.timer = None  # type: UpPaperTimer | None
 
     async def on_enable(self):
         self.setting_commands.register()
         self.config.load()
+        self.setup_timer()
 
     async def on_disable(self):
+        if self.timer:
+            self.timer.cancel()
         self.setting_commands.unregister()
         await self.up.close()
+
+    def setup_timer(self):
+        if (timerlib := DNCoreAPI.get_plugin_info("TimerLib")) and timerlib.enabled:
+            try:
+                from .timerlib import UpPaperTimer
+            except ImportError as e:
+                log.error("Failed to load timerlib: %s", e)
+            else:
+                try:
+                    self.timer = timer = UpPaperTimer(self)
+                    timer.schedule(self.config.update_check_hour, self.on_time)
+                except Exception as e:
+                    log.error("Failed to schedule timerlib: %s", e)
+                else:
+                    log.debug("Using TimerLib Schedule")
+        else:
+            log.info("TimerLibプラグインが利用できないため、アップデート通知機能が無効になっています。")
+
+    async def on_time(self):
+        log.debug("on_time")
+        pass
+
+    # command
 
     @oncommand(aliases=["upaper", "latestpaper"], allow_channels=(discord.TextChannel, discord.DMChannel, ))
     async def cmd_uppaper(self, ctx: CommandContext):
@@ -118,5 +127,37 @@ class UpPaperPlugin(Plugin):
             )
             return
 
-        em = create_message(project, _version, builds[0])
+        em = create_build_message(project, _version, builds[0])
         await ctx.send_info(em)
+
+    # event
+
+    @onevent(priority=Priority.HIGHEST, ignore_cancelled=True)
+    async def handle_notify(self, event: UpPaperVersionNotifyEvent):
+        event._future = asyncio.current_task()
+
+        ch = None
+        try:
+            m, ch = await fetch_message_channel(event.message, event.channel)
+
+            log.debug(
+                "UpPaper Notify (%s) -> %s/%s in %s/%s",
+                event.server_type, ch.id, ch.name, ch.guild.id, ch.guild.name,
+            )
+
+            _content = (None, event.content) if isinstance(event.content, discord.Embed) else (event.content, None)
+            if m:
+                await m.edit(content=_content[0], embed=_content[1])
+            else:
+                m = await ch.send(content=_content[0], embed=_content[1])
+            event.result_message = m
+
+            if event.save_id:
+                setting = self.config.create_or_get_guild(m.guild.id)
+                setting.channels[event.server_type] = UpdateChannel(m.id, ch.id, "version")
+                self.config.save()
+
+        except Exception as e:
+            ch = ch or event.channel or (event.message and event.message.channel) or None
+            log.error("Exception in notify (%s/%s): %s", ch and ch.guild and ch.guild.id, ch and ch.id, e)
+            raise

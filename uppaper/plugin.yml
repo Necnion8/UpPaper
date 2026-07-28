@@ -7,3 +7,6 @@ website: https://github.com/Necnion8/UpPaper
 
 authors:
   - Necnion8
+
+softdepends:
+  - TimerLib

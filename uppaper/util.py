@@ -1,9 +1,21 @@
 import time
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, dataclass
 from datetime import datetime
-from typing import get_type_hints, Union, get_origin, get_args
+from typing import get_type_hints, Union, get_origin, get_args, TYPE_CHECKING
 
-__all__ = ["from_dict", "TimedCache", ]
+import discord
+
+from dncore import DNCoreAPI
+from dncore.abc.serializables import Embed
+from .model import *
+
+if TYPE_CHECKING:
+    from .uppaper import UpPaper
+
+__all__ = [
+    "from_dict", "fetch_message_channel", "TimedCache",
+    "create_build_message", "fetch_latest_build", "VersionNotifyInfo",
+]
 
 
 def from_dict(cls, data):
@@ -63,6 +75,32 @@ def from_dict(cls, data):
     return cls(**kwargs)
 
 
+async def fetch_message_channel(message: int | discord.Message | None, channel: int | discord.TextChannel | None):
+    client = DNCoreAPI.client()
+
+    m = ch = None
+    if isinstance(message, discord.Message):
+        m = message
+        ch = message.channel
+
+    else:
+        if message and channel:
+            try:
+                m = await client.fetch_message(channel, message)
+                ch = m.channel
+            except (discord.Forbidden, discord.NotFound):
+                m = None
+
+        if not ch:
+            if isinstance(channel, discord.TextChannel):
+                ch = channel
+            else:
+                if (ch := client.get_channel(channel)) is None:
+                    ch = await client.fetch_channel(channel)
+
+    return m, ch
+
+
 class TimedCache(object):
     def __init__(self, expire=5 * 60):
         self._expire = expire
@@ -77,3 +115,47 @@ class TimedCache(object):
     def set(self, key, dat):
         self._cache[key] = time.time(), dat
         return dat
+
+
+#
+
+def create_build_message(info: "VersionNotifyInfo", *, fetch_time: datetime | None = None):
+    project = info.project
+    version = info.version.version.id if isinstance(info.version, Version) else info.version
+    build = info.build
+
+    dt = "{0.year}/{0.month}/{0.day}".format(build.time.astimezone())
+    family = next(f for f, vers in project.versions.items() if version in vers)
+    family_url = f"https://fill-ui.papermc.io/projects/{project.project.id}/family/{family}"
+    build_url = f"https://fill-ui.papermc.io/projects/{project.project.id}/version/{version}?build={build.id}"
+    download_file = build.downloads.get("server:default")
+
+    lines = [
+        f"- Build **#{build.id}** ({build.channel}, {dt})",
+        f"- [ファミリー情報]({family_url}) | [バージョン情報]({build_url})",
+    ]
+
+    if download_file:
+        lines.append(f"- [{download_file.name}]({download_file.url}) ({round(download_file.size / 1024 / 1024, 1)} MB)")
+
+    em = Embed.info("\n".join(lines), f"# {project.project.name} {version}")
+
+    if fetch_time is not None:
+        dt = "{0.month}/{0.day}, {0.hour}:{0.minute:02d}".format(fetch_time)
+        em.set_footer(text=f"({dt} 時点)")
+
+    return em
+
+
+async def fetch_latest_build(up: "UpPaper", project_id: str):
+    project = await up.project(project_id)
+    latest_version = next(v for vers in project.versions.values() for v in vers)
+    builds = await up.builds(project_id, latest_version)
+    return VersionNotifyInfo(project, latest_version, builds[0])
+
+
+@dataclass(frozen=True)
+class VersionNotifyInfo:
+    project: "Project"
+    version: "str | Version"
+    build: "Build"

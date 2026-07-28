@@ -12,7 +12,7 @@ log = getLogger(__name__)
 
 
 class UpPaper(object):
-    def __init__(self, *, user_agent: str = None, cache_expire_minutes=5):
+    def __init__(self, *, user_agent: str | None = None, cache_expire_minutes=5):
         headers = {"User-Agent": user_agent or USER_AGENT, }
         self.session = aiohttp.ClientSession(base_url=API_URL, headers=headers)
         self._cache = TimedCache(cache_expire_minutes * 60)
