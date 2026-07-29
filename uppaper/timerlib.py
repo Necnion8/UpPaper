@@ -6,7 +6,7 @@ class UpPaperTimer(object):
         self.timer = Timer(owner)
 
     def schedule(self, hour: int, callback):
-        self.timer.daily(hour, 0, callback)
+        return self.timer.daily(hour, 0, callback)
 
     def cancel(self):
         self.timer.cancel_all()

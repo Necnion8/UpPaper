@@ -1,4 +1,6 @@
 import asyncio
+import datetime
+from collections import defaultdict
 from logging import getLogger
 from typing import TYPE_CHECKING
 
@@ -16,6 +18,7 @@ from .util import *
 
 if TYPE_CHECKING:
     from .timerlib import UpPaperTimer
+    from dncore.extensions.timerlib import TimerTask
 
 log = getLogger(__name__)
 
@@ -26,6 +29,7 @@ class UpPaperPlugin(Plugin):
         self.config = Config(self.data_dir / "config.yml")
         self.setting_commands = SettingCommandHandler(self, self.up, self.config)
         self.timer = None  # type: UpPaperTimer | None
+        self.timer_task = None  # type: TimerTask | None
 
     async def on_enable(self):
         self.setting_commands.register()
@@ -39,6 +43,7 @@ class UpPaperPlugin(Plugin):
         await self.up.close()
 
     def setup_timer(self):
+        self.timer_task = None
         if (timerlib := DNCoreAPI.get_plugin_info("TimerLib")) and timerlib.enabled:
             try:
                 from .timerlib import UpPaperTimer
@@ -47,7 +52,7 @@ class UpPaperPlugin(Plugin):
             else:
                 try:
                     self.timer = timer = UpPaperTimer(self)
-                    timer.schedule(self.config.update_check_hour, self.on_time)
+                    self.timer_task = timer.schedule(self.config.update_check_hour, self.on_time)
                 except Exception as e:
                     log.error("Failed to schedule timerlib: %s", e)
                 else:
@@ -55,9 +60,52 @@ class UpPaperPlugin(Plugin):
         else:
             log.info("TimerLibプラグインが利用できないため、アップデート通知機能が無効になっています。")
 
-    async def on_time(self):
+    async def on_time(self, _):
         log.debug("on_time")
-        pass
+
+        # fetch destination
+        channels = defaultdict(
+            list
+        )  # type: dict[str, list[tuple[UpdateChannel, discord.TextChannel, discord.Message | None]]]
+
+        for setting in self.config.guilds_setting.values():
+            if not setting.enable:
+                continue
+
+            for _type, upd_ch in setting.channels.items():
+                m, ch = await fetch_message_channel(upd_ch.id, upd_ch.channel_id)
+                if ch:
+                    channels[_type].append((upd_ch, ch, m))
+
+        # check version
+        versions = {}  # type: dict[str, VersionNotifyInfo]
+        for server_type in channels.keys():
+            try:
+                info = await fetch_latest_build(self.up, server_type)
+            except Exception as e:
+                log.exception("Unable to fetch latest build: %s", server_type, exc_info=e)
+                channels.pop(server_type)
+            else:
+                versions[server_type] = info
+
+        if not channels:
+            return
+
+        # send notify
+        log.info("Sending %s channels", sum(len(ch) for ch in channels.values()))
+        now = datetime.datetime.now()
+        for server_type, _channels in channels.items():
+            info = versions[server_type]
+            embed = create_build_message(info, fetch_time=now)
+            for upd_ch, ch, m in _channels:
+                DNCoreAPI.call_event(UpPaperVersionNotifyEvent(
+                    (m and m.channel or ch).guild.id, m, ch, server_type, info,
+                    content=embed, save_id=True,
+                ))
+
+    @property
+    def scheduled_checker(self):
+        return bool(self.timer_task and self.timer_task.scheduled)
 
     # command
 
@@ -138,7 +186,14 @@ class UpPaperPlugin(Plugin):
 
         ch = None
         try:
-            m, ch = await fetch_message_channel(event.message, event.channel)
+            _m, _ch = event.message, event.channel
+
+            setting = self.config.get_guild(event.guild_id)
+            if setting and (upd_ch := setting.channels.get(event.server_type)):
+                if not upd_ch.last_version or upd_ch.last_version != event.info.version:
+                    _m = None  # new send
+
+            m, ch = await fetch_message_channel(_m, _ch)
 
             log.debug(
                 "UpPaper Notify (%s) -> %s/%s in %s/%s",
@@ -154,7 +209,7 @@ class UpPaperPlugin(Plugin):
 
             if event.save_id:
                 setting = self.config.create_or_get_guild(m.guild.id)
-                setting.channels[event.server_type] = UpdateChannel(m.id, ch.id, "version")
+                setting.channels[event.server_type] = UpdateChannel(m.id, ch.id, event.info.version_id)
                 self.config.save()
 
         except Exception as e:

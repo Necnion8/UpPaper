@@ -159,3 +159,7 @@ class VersionNotifyInfo:
     project: "Project"
     version: "str | Version"
     build: "Build"
+
+    @property
+    def version_id(self):
+        return str(self.version.version.id if isinstance(self.version, Version) else self.version)

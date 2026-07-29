@@ -58,8 +58,13 @@ class SettingCommandHandler(EventListener):
         setting = self.config.get_guild(event.context.guild.id)
         state_label = ["OFF", "ON"][bool(setting and setting.enable)]
 
+        scheduled = self.plugin.scheduled_checker
         event.add_line(owner, f"\n**{icon_title} UpPaper 通知チャンネル設定**")
-        event.add_line(owner, f"{icon} 通知: **{state_label}**")
+        if setting and setting.enable and not scheduled:
+            event.add_line(owner, f"{icon} 通知: **{state_label}**  \\⚠️️管理者によって無効化")
+        else:
+            event.add_line(owner, f"{icon} 通知: **{state_label}**")
+
         if setting:
             if setting.channels:
                 for server_type, upd_ch in setting.channels.items():
@@ -110,7 +115,11 @@ class SettingCommandHandler(EventListener):
                 (discord.ButtonStyle.gray, "無効にする", "\\✅ **有効**"),
             )[bool(setting and setting.enable)]
 
-            lines = [f"- 通知設定: {state_label}"]
+            state_line = f"- 通知設定: {state_label}"
+            if setting and setting.enable and not self.plugin.scheduled_checker:
+                state_line += "  \\⚠️️管理者によって無効化"
+            lines = [state_line, ]
+
             if any(channels.values()):
                 lines.append("- チャンネル:")
                 lines.extend(f"  - <#{_ch.id}> -> **`{_typ}`**" for _typ, _ch in channels.items() if _ch)
@@ -214,7 +223,8 @@ class SettingCommandHandler(EventListener):
                             ch = await inter.guild.fetch_channel(m_id.channel_id)
 
                         event = await DNCoreAPI.call_event(UpPaperVersionNotifyEvent(
-                            m, ch, server_type, content=notify_content, save_id=True,
+                            (m and m.channel or ch).guild.id, m, ch, server_type, version_info,
+                            content=notify_content, save_id=True,
                         ))
 
                         if event.cancelled:
