@@ -1,7 +1,7 @@
 main: uppaper.plugin.UpPaperPlugin
 name: UpPaper
-version: "1.0.0/260722"
-dncore: 6.1.0
+version: "1.0.0/260731"
+dncore: 6.1.2
 description: "PaperMC アップデート通知 プラグイン"
 website: https://github.com/Necnion8/UpPaper
 
