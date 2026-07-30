@@ -126,7 +126,7 @@ class UpPaperPlugin(Plugin):
         """
         project_id = ctx.args.get(0, "paper")
         spec_version = ctx.args.get(1, None)
-        if spec_version is None and re.search(r"^\d+\\.", project_id):  # paper alias e.g. !uppaper 1.12.2
+        if spec_version is None and re.search(r"^\d+\.\d+", project_id):  # paper alias e.g. !uppaper 1.12.2
             project_id, spec_version = "paper", project_id
 
         # parse arg / fetch info
@@ -249,6 +249,8 @@ class UpPaperPlugin(Plugin):
             await r.edit_message(embed=em, view=view)
 
         await ctx.send_info(em, kw=dict(view=None))
+        ctx.clean_message = True
+        ctx.clean_auto()
 
     # event
 
