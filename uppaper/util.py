@@ -138,6 +138,14 @@ def create_build_message(info: "VersionNotifyInfo", *, fetch_time: datetime | No
     if download_file:
         lines.append(f"- [{download_file.name}]({download_file.url}) ({round(download_file.size / 1024 / 1024, 1)} MB)")
 
+    if isinstance(info.version, Version):
+        lines.append("")
+        v_info = info.version.version
+        lines.append(f"- Java 最小バージョン: **{v_info.java.version.minimum}**")
+        if v_info.java.flags.recommended:
+            flags = " ".join(v_info.java.flags.recommended)
+            lines.append(f"- 推奨 起動フラグ: ```{flags}```")
+
     em = Embed.info("\n".join(lines), f"# {project.project.name} {version}")
 
     if fetch_time is not None:

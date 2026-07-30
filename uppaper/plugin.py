@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import re
 from collections import defaultdict
 from logging import getLogger
 from typing import TYPE_CHECKING
@@ -12,7 +13,9 @@ from dncore.event import onevent, Priority
 from dncore.plugin import Plugin
 from .config import Config, UpdateChannel
 from .event import UpPaperVersionNotifyEvent
+from .model import Version
 from .settingcommand import SettingCommandHandler
+from .ui import StreamView, Select
 from .uppaper import UpPaper, GIT_URL
 from .util import *
 
@@ -123,7 +126,10 @@ class UpPaperPlugin(Plugin):
         """
         project_id = ctx.args.get(0, "paper")
         spec_version = ctx.args.get(1, None)
+        if spec_version is None and re.search(r"^\d+\\.", project_id):  # paper alias e.g. !uppaper 1.12.2
+            project_id, spec_version = "paper", project_id
 
+        # parse arg / fetch info
         try:
             async with ctx.typing():
                 msg = ":pleading_face: {name} サーバーの情報を取得できませんでした"
@@ -137,7 +143,7 @@ class UpPaperPlugin(Plugin):
                     elif spec_version in versions:
                         _version = spec_version
                     else:
-                        _version = None  # not exists
+                        _version = "no-exists?"
 
                     if _version:
                         msg = ":pleading_face: {name} {version} サーバーの情報を取得できませんでした"
@@ -175,8 +181,74 @@ class UpPaperPlugin(Plugin):
             )
             return
 
-        em = create_build_message(project, _version, builds[0])
-        await ctx.send_info(em)
+        # show / version select
+        em = create_build_message(VersionNotifyInfo(project, _version, builds[0]))
+        view = StreamView(timeout=30)
+        current_family = next((fam for fam, vers in project.versions.items() if _version in vers), None)
+        family_select = view.add(Select(
+            options=[discord.SelectOption(
+                label=fam, value=fam, default=bool(current_family and current_family == fam)
+            ) for fam in project.versions.keys()],
+            min_values=1, max_values=1, required=True,
+        ))
+        version_select = view.add(Select(
+            options=[discord.SelectOption(
+                label=ver, value=ver, default=bool(_version == ver)
+            ) for ver in project.versions.get(current_family or "", [])],
+        ))
+        ext_button = view.add_button(label="詳細情報", style=discord.ButtonStyle.secondary)
+        extend_versions = {}  # type: dict[str, Version]
+
+        ctx.clean_message = False
+        await ctx.send_info(em, kw=dict(view=view))
+        async for interaction, item in view:
+            if ext_button is item:
+                try:
+                    version_info = await self.up.version(project_id, _version)
+                except Exception as e:
+                    log.warning("Unable to fetch version (by command): %s %s", project_id, _version, exc_info=e)
+                    em = create_build_message(VersionNotifyInfo(project, _version, builds[0]))
+                    em.description += "\n\n:warning: 詳細情報を取得できませんでした"
+                else:
+                    version_info = extend_versions[_version] = version_info
+                    ext_button.disabled = True
+                    em = create_build_message(VersionNotifyInfo(project, version_info, builds[0]))
+
+            elif family_select is item:
+                current_family = family_select.get_current_values()[0]
+                _version = project.versions[current_family][0]
+                for opt in family_select.options:
+                    opt.default = opt.value == current_family
+                version_select.options.clear()
+                version_select.options.extend(
+                    discord.SelectOption(label=ver, value=ver, default=bool(_version == ver))
+                    for ver in project.versions.get(current_family or "", [])
+                )
+                builds = await self.up.builds(project_id, _version)
+                try:
+                    version_info = extend_versions[_version]
+                    ext_button.disabled = True
+                except KeyError:
+                    version_info = _version
+                    ext_button.disabled = False
+                em = create_build_message(VersionNotifyInfo(project, version_info, builds[0]))
+
+            elif version_select is item:
+                _version = version_select.get_current_values()[0]
+                for opt in version_select.options:
+                    opt.default = opt.value == _version
+                try:
+                    version_info = extend_versions[_version]
+                    ext_button.disabled = True
+                except KeyError:
+                    version_info = _version
+                    ext_button.disabled = False
+                em = create_build_message(VersionNotifyInfo(project, version_info, builds[0]))
+
+            r = interaction.response  # type: discord.InteractionResponse
+            await r.edit_message(embed=em, view=view)
+
+        await ctx.send_info(em, kw=dict(view=None))
 
     # event
 
